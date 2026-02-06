@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="KernelReader/KernelReader.vcxproj" Id="9d028052-45d3-45ca-89ed-4c66e9da7e4b" />
+</Solution>
