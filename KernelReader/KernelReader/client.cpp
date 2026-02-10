@@ -120,7 +120,7 @@ int main() {
             ReadMemory(hDriver, pid, localPawn + offsets::m_pClippingWeapon, weaponPtr);
 
             int ammo = 0;
-            
+
 
             if (weaponPtr != 0) {
                 ReadMemory(hDriver, pid, weaponPtr + offsets::m_iClip1, ammo);
