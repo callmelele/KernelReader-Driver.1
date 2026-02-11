@@ -3,7 +3,7 @@
 #include <TlHelp32.h>
 #include <d3d11.h>
 #include <dwmapi.h>
-#include <string>
+#include <string> 
 
 #include "imgui/imgui.h"
 #include "imgui/imgui_impl_win32.h"
@@ -13,10 +13,16 @@
 #pragma comment(lib, "dwmapi.lib")
 
 #include "offsets.h"
+#include "overlay.h"
 
 struct Vector2 { float x, y; };
 struct Vector3 { float x, y, z; };
 struct ViewMatrix { float matrix[4][4]; };
+
+struct BoneData {
+    Vector3 pos;
+    char pad[20];
+};
 
 #define IOCTL_READ_MEMORY CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
@@ -47,56 +53,15 @@ bool WorldToScreen(Vector3 pos, Vector2& screen, ViewMatrix vMatrix, int width, 
     return true;
 }
 
-class Overlay {
-public:
-    HWND hwnd;
-    ID3D11Device* device;
-    ID3D11DeviceContext* deviceContext;
-    IDXGISwapChain* swapChain;
-    ID3D11RenderTargetView* renderTargetView;
-
-    static LRESULT CALLBACK WindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-        if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam)) return true;
-        switch (msg) {
-        case WM_SIZE: return 0;
-        case WM_SYSCOMMAND: if ((wParam & 0xFFF0) == SC_KEYMENU) return 0; break;
-        case WM_DESTROY: PostQuitMessage(0); return 0;
-        }
-        return DefWindowProc(hWnd, msg, wParam, lParam);
+bool GetBoneScreenPos(HANDLE hDriver, DWORD pid, uintptr_t boneArray, int index, ViewMatrix vMatrix, int sw, int sh, Vector2& screenPos) {
+    BoneData bone;
+    if (ReadMemory(hDriver, pid, boneArray + (index * 32), bone)) {
+        return WorldToScreen(bone.pos, screenPos, vMatrix, sw, sh);
     }
+    return false;
+}
 
-    bool Init() {
-        WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WindowProc, 0, 0, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, L"CS2_OV", NULL };
-        RegisterClassEx(&wc);
-        hwnd = CreateWindowEx(WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED, wc.lpszClassName, L"CS2 Overlay", WS_POPUP, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), NULL, NULL, wc.hInstance, NULL);
 
-        SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
-        MARGINS margins = { -1 };
-        DwmExtendFrameIntoClientArea(hwnd, &margins);
-
-        DXGI_SWAP_CHAIN_DESC sd = {};
-        sd.BufferCount = 2;
-        sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-        sd.OutputWindow = hwnd;
-        sd.SampleDesc.Count = 1;
-        sd.Windowed = TRUE;
-        sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
-
-        D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, NULL, 0, D3D11_SDK_VERSION, &sd, &swapChain, &device, NULL, &deviceContext);
-        ID3D11Texture2D* backBuffer;
-        swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer));
-        device->CreateRenderTargetView(backBuffer, NULL, &renderTargetView);
-        backBuffer->Release();
-
-        ShowWindow(hwnd, SW_SHOW);
-        UpdateWindow(hwnd);
-        ImGui::CreateContext();
-        ImGui_ImplWin32_Init(hwnd);
-        ImGui_ImplDX11_Init(device, deviceContext);
-        return true;
-    }
-};
 
 DWORD GetPidByName(const wchar_t* processName) {
     DWORD pid = 0;
@@ -131,18 +96,13 @@ int main() {
 
     Overlay ov;
     if (!ov.Init()) return 1;
-
-
     int sw = GetSystemMetrics(SM_CXSCREEN);
     int sh = GetSystemMetrics(SM_CYSCREEN);
 
     while (true) {
         SetWindowPos(ov.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
         MSG msg;
-        while (PeekMessage(&msg, NULL, 0U, 0U, PM_REMOVE)) {
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
-        }
+        while (PeekMessage(&msg, NULL, 0U, 0U, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessage(&msg); }
 
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
@@ -155,23 +115,14 @@ int main() {
 
         ViewMatrix vMatrix;
         ReadMemory(hDriver, pid, clientDll + offsets::dwViewMatrix, vMatrix);
-        uintptr_t entityList = 0;
+        uintptr_t entityList = 0, localPawn = 0;
         ReadMemory(hDriver, pid, clientDll + offsets::dwEntityList, entityList);
-        uintptr_t localPawn = 0;
         ReadMemory(hDriver, pid, clientDll + offsets::dwLocalPlayerPawn, localPawn);
-
-        //will use to draw for text on  screen later.
-        /*int localHealth = 0;
-        ReadMemory(hDriver, pid, localPawn + offsets::m_iHealth, localHealth);
-        std::string healthDisplay = "HP: " + std::to_string(localHealth);
-        ImGui::SetWindowFontScale(2.0f);
-        drawList->AddText(ImVec2(100, 100), IM_COL32(255, 0, 0, 255), healthDisplay.c_str());*/
 
         for (int i = 1; i < 64; i++) {
             uintptr_t listEntry = 0, controller = 0, listEntry2 = 0, pawn = 0;
-            if (!ReadMemory(hDriver, pid, entityList + (8LL * (i >> 9) + 16), listEntry)) continue;
-            if (!ReadMemory(hDriver, pid, listEntry + (112LL * (i & 0x1FF)), controller)) continue;
-
+            ReadMemory(hDriver, pid, entityList + (8LL * (i >> 9) + 16), listEntry);
+            ReadMemory(hDriver, pid, listEntry + (112LL * (i & 0x1FF)), controller);
             uint32_t pawnHandle = 0;
             ReadMemory(hDriver, pid, controller + 0x6C4, pawnHandle);
             if (pawnHandle == 0 || pawnHandle == 0xFFFFFFFF) continue;
@@ -180,21 +131,25 @@ int main() {
             ReadMemory(hDriver, pid, listEntry2 + (112LL * (pawnHandle & 0x1FF)), pawn);
             if (!pawn || pawn == localPawn) continue;
 
-            Vector3 worldPos;
-            uintptr_t sceneNode;
-            if (ReadMemory(hDriver, pid, pawn + offsets::m_pGameSceneNode, sceneNode)) {
-                ReadMemory(hDriver, pid, sceneNode + offsets::m_vecAbsOrigin, worldPos);
-            }
+            uintptr_t sceneNode = 0;
+            ReadMemory(hDriver, pid, pawn + offsets::m_pGameSceneNode, sceneNode);
 
-            Vector2 screenPos;
-            if (WorldToScreen(worldPos, screenPos, vMatrix, sw, sh)) {
-                drawList->AddCircle(ImVec2(screenPos.x, screenPos.y), 5.0f, IM_COL32(255, 0, 0, 255), 12, 1.5f);
+            uintptr_t boneArray = 0;
+            ReadMemory(hDriver, pid, sceneNode + 0x160 + 0x80, boneArray);
+
+            if (boneArray) {
+                Vector2 head, neck;
+                if (GetBoneScreenPos(hDriver, pid, boneArray, 6, vMatrix, sw, sh, head) &&
+                    GetBoneScreenPos(hDriver, pid, boneArray, 5, vMatrix, sw, sh, neck)) {
+
+                    drawList->AddCircleFilled(ImVec2(head.x, head.y), 4.0f, IM_COL32(255, 255, 0, 255));
+                    drawList->AddLine(ImVec2(head.x, head.y), ImVec2(neck.x, neck.y), IM_COL32(255, 255, 255, 255), 2.0f);
+                }
             }
         }
 
         ImGui::End();
         ImGui::Render();
-
         float clear_color[4] = { 0.f, 0.f, 0.f, 0.f };
         ov.deviceContext->OMSetRenderTargets(1, &ov.renderTargetView, NULL);
         ov.deviceContext->ClearRenderTargetView(ov.renderTargetView, clear_color);
@@ -202,7 +157,7 @@ int main() {
         ov.swapChain->Present(1, 0);
 
         if (GetAsyncKeyState(VK_END)) break;
-        Sleep(5); 
+        Sleep(1);
     }
     return 0;
 }
