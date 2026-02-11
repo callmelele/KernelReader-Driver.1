@@ -1,7 +1,10 @@
 #include <windows.h>
 #include <iostream>
 #include <TlHelp32.h>
+#include <string>
 #include "offsets.h"
+
+struct Vector3 { float x, y, z; };
 
 #define IOCTL_READ_MEMORY CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
@@ -20,15 +23,12 @@ typedef struct _KERNEL_COMMAND_REQUEST {
     COMMAND_TYPE Command;
 } KERNEL_COMMAND_REQUEST, * PKERNEL_COMMAND_REQUEST;
 
+
 template <typename T>
-void ReadMemory(HANDLE hDriver, DWORD pid, uintptr_t address, T& buffer) {
-    KERNEL_COMMAND_REQUEST req = { 0 };
-    req.ProcessId = pid;
-    req.Address = address;
-    req.Buffer = &buffer;
-    req.Size = sizeof(T);
-    req.Command = COMMAND_READ_MEMORY;
-    DeviceIoControl(hDriver, IOCTL_READ_MEMORY, &req, sizeof(req), &req, sizeof(req), nullptr, nullptr);
+bool ReadMemory(HANDLE hDriver, DWORD pid, uintptr_t address, T& buffer) {
+    if (address < 0x10000 || address > 0x7FFFFFFEFFFF) return false;
+    KERNEL_COMMAND_REQUEST req = { pid, (unsigned __int64)address, &buffer, sizeof(T), COMMAND_READ_MEMORY };
+    return DeviceIoControl(hDriver, IOCTL_READ_MEMORY, &req, sizeof(req), &req, sizeof(req), nullptr, nullptr);
 }
 
 DWORD GetPidByName(const wchar_t* processName) {
@@ -37,12 +37,7 @@ DWORD GetPidByName(const wchar_t* processName) {
     if (snapshot != INVALID_HANDLE_VALUE) {
         PROCESSENTRY32W entry = { sizeof(entry) };
         if (Process32FirstW(snapshot, &entry)) {
-            do {
-                if (_wcsicmp(entry.szExeFile, processName) == 0) {
-                    pid = entry.th32ProcessID;
-                    break;
-                }
-            } while (Process32NextW(snapshot, &entry));
+            do { if (_wcsicmp(entry.szExeFile, processName) == 0) { pid = entry.th32ProcessID; break; } } while (Process32NextW(snapshot, &entry));
         }
         CloseHandle(snapshot);
     }
@@ -55,92 +50,87 @@ uintptr_t GetModuleBase(DWORD pid, const wchar_t* modName) {
     if (snapshot != INVALID_HANDLE_VALUE) {
         MODULEENTRY32W entry = { sizeof(entry) };
         if (Module32FirstW(snapshot, &entry)) {
-            do {
-                if (_wcsicmp(entry.szModule, modName) == 0) {
-                    base = (uintptr_t)entry.modBaseAddr;
-                    break;
-                }
-            } while (Module32NextW(snapshot, &entry));
+            do { if (_wcsicmp(entry.szModule, modName) == 0) { base = (uintptr_t)entry.modBaseAddr; break; } } while (Module32NextW(snapshot, &entry));
         }
         CloseHandle(snapshot);
     }
     return base;
 }
 
+
 int main() {
     HANDLE hDriver = CreateFileA("\\\\.\\FinalFix_01", GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (hDriver == INVALID_HANDLE_VALUE) {
-        std::cout << "[-] Driver handle failed. Check mapping." << std::endl;
-        std::cout << "[-] Press any key to exit..." << std::endl;
-        std::cin.get();
-        return 1;
-    }
-
-    std::cout << "[+] Connected to Driver" << std::endl;
+    if (hDriver == INVALID_HANDLE_VALUE) return 1;
 
     DWORD pid = 0;
+    while (pid == 0) pid = GetPidByName(L"cs2.exe");
     uintptr_t clientDll = 0;
+    while (clientDll == 0) clientDll = GetModuleBase(pid, L"client.dll");
 
-    // Find CS2
-    while (pid == 0) {
-        pid = GetPidByName(L"cs2.exe");
-        if (pid == 0) {
-            std::cout << "\r[!] Waiting for CS2...     " << std::flush;
-            Sleep(1000);
-        }
-    }
+    std::cout << "[+] System Fully Calibrated. Tracking Entities..." << std::endl;
 
-    std::cout << "\n[+] Found CS2! PID: " << pid << std::endl;
-
-    // Get client.dll
-    while (clientDll == 0) {
-        clientDll = GetModuleBase(pid, L"client.dll");
-        if (clientDll == 0) {
-            std::cout << "\r[!] Waiting for client.dll...     " << std::flush;
-            Sleep(500);
-        }
-    }
-
-    std::cout << "[+] Found client.dll at: 0x" << std::hex << clientDll << std::endl;
-    std::cout << "[+] Monitoring started..." << std::endl;
-
-    // Main loop
     while (true) {
+        uintptr_t entityList = 0;
+        ReadMemory(hDriver, pid, clientDll + offsets::dwEntityList, entityList);
+
         uintptr_t localPawn = 0;
         ReadMemory(hDriver, pid, clientDll + offsets::dwLocalPlayerPawn, localPawn);
 
-        if (localPawn != 0) {
-            // Read health
+		uintptr_t weaponptr = 0;
+		ReadMemory(hDriver, pid, localPawn + offsets::m_pClippingWeapon, weaponptr);
+
+		int ammo = 0;
+		ReadMemory(hDriver, pid, weaponptr + offsets::m_iClip1, ammo);
+        if (ammo < 0)
+			ammo = 0;
+		int health = 0;
+		ReadMemory(hDriver, pid, localPawn + offsets::m_iHealth, health);
+
+        int localTeam = 0;
+        if (localPawn) ReadMemory(hDriver, pid, localPawn + offsets::m_iTeamNum, localTeam);
+
+        system("cls");
+        std::cout << "--- CS2 Kernel Radar ---" << std::endl;
+        std::cout << "Local Team: " << (localTeam == 2 ? "T" : "CT") << "\n" << std::endl;
+		std::cout << "Ammo: " << ammo << " / " << "Health: " << health << "\n" << std::endl;
+
+        for (int i = 1; i < 64; i++) {
+
+            uintptr_t listEntry = 0;
+            if (!ReadMemory(hDriver, pid, entityList + (8LL * (i >> 9) + 16), listEntry)) continue;
+
+            uintptr_t controller = 0;
+            if (!ReadMemory(hDriver, pid, listEntry + (112LL * (i & 0x1FF)), controller)) continue;
+
+            uint32_t pawnHandle = 0;
+            ReadMemory(hDriver, pid, controller + 0x6C4, pawnHandle); 
+            if (pawnHandle == 0 || pawnHandle == 0xFFFFFFFF) continue;
+
+            uintptr_t listEntry2 = 0;
+            ReadMemory(hDriver, pid, entityList + (8LL * ((pawnHandle & 0x7FFF) >> 9) + 16), listEntry2);
+
+            uintptr_t pawn = 0;
+            ReadMemory(hDriver, pid, listEntry2 + (112LL * (pawnHandle & 0x1FF)), pawn);
+            if (!pawn || pawn == localPawn) continue;
+
             int health = 0;
-
-            ReadMemory(hDriver, pid, localPawn + offsets::m_iHealth, health);
-
-            // Read weapon and ammo
-            uintptr_t weaponPtr = 0;
-            ReadMemory(hDriver, pid, localPawn + offsets::m_pClippingWeapon, weaponPtr);
-
-            int ammo = 0;
-
-
-            if (weaponPtr != 0) {
-                ReadMemory(hDriver, pid, weaponPtr + offsets::m_iClip1, ammo);
-            }
-            if (ammo < 0) {
-                ammo = 0;
-            }
+            int team = 0;
+            ReadMemory(hDriver, pid, pawn + offsets::m_iHealth, health);
+            ReadMemory(hDriver, pid, pawn + offsets::m_iTeamNum, team);
 
             if (health > 0 && health <= 100) {
-                std::cout << "\r[+] Health: " << std::dec << health
-                    << " | Ammo: " << ammo << "      " << std::flush;
+                // Get Position for ESP/Radar
+                uintptr_t sceneNode = 0;
+                Vector3 pos = { 0, 0, 0 };
+                if (ReadMemory(hDriver, pid, pawn + offsets::m_pGameSceneNode, sceneNode)) {
+                    ReadMemory(hDriver, pid, sceneNode + offsets::m_vecAbsOrigin, pos);
+                }
+
+                const char* relation = (team == localTeam) ? "[TEAM]" : "[ENEMY]";
+                printf("%-7s | HP: %-3d | Pos: %d, %d, %d\n", relation, health, (int)pos.x, (int)pos.y, (int)pos.z);
             }
         }
-        else {
-            std::cout << "\r[!] Waiting for player spawn...      " << std::flush;
-        }
-
         Sleep(50);
     }
-
-    CloseHandle(hDriver);
     return 0;
 }
