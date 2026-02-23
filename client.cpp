@@ -106,6 +106,7 @@ void PerformMove(float x, float y, int sw, int sh) {
         int8_t finalX = (int8_t)std::clamp((int)moveX, -127, 127);
         int8_t finalY = (int8_t)std::clamp((int)moveY, -127, 127);
         esp32.SendData(finalX, finalY, 0);
+        std::cout << "esp32 move" << std::endl;
     }
     else {
         mouse_event(MOUSEEVENTF_MOVE, (DWORD)moveX, (DWORD)moveY, NULL, NULL);
@@ -114,7 +115,8 @@ void PerformMove(float x, float y, int sw, int sh) {
 
 void PerformClick() {
     if (config::g_hardware && esp32.IsConnected()) {
-        esp32.SendData(0, 0, 1); 
+        esp32.SendData(0, 0, 1);
+        std::cout << "esp32 trigger" << std::endl;
     }
     else {
         mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
@@ -156,7 +158,7 @@ int main() {
         int localTeam = 0;
         ReadMemory(hDriver, pid, localPawn + offsets::m_iTeamNum, localTeam);
 
-        int localIndex = 1; 
+        int localIndex = 1;
         ReadMemory(hDriver, pid, localPawn + offsets::m_iIDEntIndex, localIndex);
 
         Vector3 localPos;
@@ -248,7 +250,7 @@ int main() {
             }
 
             float currentThick = config::thickiness;
-            float currentSize = 6.0f; 
+            float currentSize = 6.0f;
             float barHeight = 60.0f;
             float barX1 = 22;
             float barX2 = 18;
