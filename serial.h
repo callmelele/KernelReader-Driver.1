@@ -1,4 +1,7 @@
-
+#pragma once
+#include <windows.h>
+#include <iostream>
+#include <cstdint>
 
 class Serial {
 private:
@@ -16,12 +19,14 @@ public:
                 dcbSerialParams.ByteSize = 8;
                 dcbSerialParams.StopBits = ONESTOPBIT;
                 dcbSerialParams.Parity = NOPARITY;
-                dcbSerialParams.fDtrControl = DTR_CONTROL_DISABLE;
-                dcbSerialParams.fRtsControl = RTS_CONTROL_DISABLE;
+
+                dcbSerialParams.fDtrControl = DTR_CONTROL_ENABLE;
+                dcbSerialParams.fRtsControl = RTS_CONTROL_ENABLE;
+
                 if (SetCommState(hSerial, &dcbSerialParams)) {
                     connected = true;
                     PurgeComm(hSerial, PURGE_RXCLEAR | PURGE_TXCLEAR);
-                    std::cout << "[+] Stable Bridge Connected on COM3" << std::endl;
+                    std::cout << "[+] Stable Bridge Connected on " << portName << std::endl;
                 }
             }
         }
