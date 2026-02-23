@@ -24,15 +24,37 @@ public:
 
     static LRESULT CALLBACK WindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam)) return true;
-        if (msg == WM_DESTROY) { PostQuitMessage(0); return 0; }
+
+        switch (msg) {
+        case WM_DESTROY:
+            PostQuitMessage(0);
+            return 0;
+        case WM_SYSCOMMAND:
+            if ((wParam & 0xfff0) == SC_KEYMENU) return 0; 
+            break;
+        }
         return DefWindowProc(hWnd, msg, wParam, lParam);
     }
 
     bool Init() {
         WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WindowProc, 0, 0, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, L"CS2_OV", NULL };
         RegisterClassEx(&wc);
-        hwnd = CreateWindowEx(WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED, wc.lpszClassName, L"CS2 Overlay", WS_POPUP, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), NULL, NULL, wc.hInstance, NULL);
-        SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+
+        hwnd = CreateWindowEx(
+            WS_EX_TOPMOST | WS_EX_LAYERED,
+            wc.lpszClassName,
+            L"CS2 Overlay",
+            WS_POPUP,
+            0, 0,
+            GetSystemMetrics(SM_CXSCREEN),
+            GetSystemMetrics(SM_CYSCREEN),
+            NULL, NULL, wc.hInstance, NULL
+        );
+
+        if (!hwnd) return false;
+
+        SetLayeredWindowAttributes(hwnd, RGB(0, 0, 0), 255, LWA_ALPHA);
+
         MARGINS margins = { -1 };
         DwmExtendFrameIntoClientArea(hwnd, &margins);
 
@@ -45,18 +67,29 @@ public:
         sd.Windowed = TRUE;
         sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
 
-        D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, NULL, 0, D3D11_SDK_VERSION, &sd, &swapChain, &device, NULL, &deviceContext);
+        HRESULT hr = D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, NULL, 0, D3D11_SDK_VERSION, &sd, &swapChain, &device, NULL, &deviceContext);
+        if (FAILED(hr)) return false;
+
         ID3D11Texture2D* backBuffer;
         swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer));
         device->CreateRenderTargetView(backBuffer, NULL, &renderTargetView);
         backBuffer->Release();
 
         ShowWindow(hwnd, SW_SHOW);
+        UpdateWindow(hwnd);
+
+        SetForegroundWindow(hwnd);
+
         ImGui::CreateContext();
         ImGui_ImplWin32_Init(hwnd);
         ImGui_ImplDX11_Init(device, deviceContext);
 
         ImGui::StyleColorsDark();
+
+        auto& style = ImGui::GetStyle();
+        style.WindowRounding = 5.0f;
+        style.FrameRounding = 3.0f;
+
         return true;
     }
 
@@ -68,8 +101,12 @@ public:
 
                 LONG style = GetWindowLong(hwnd, GWL_EXSTYLE);
                 if (showMenu) {
-                    style &= ~WS_EX_TRANSPARENT; 
+                    style &= ~WS_EX_TRANSPARENT;
                     SetWindowLong(hwnd, GWL_EXSTYLE, style);
+
+                    ClipCursor(NULL);
+
+                    SetForegroundWindow(hwnd);
                 }
                 else {
                     style |= WS_EX_TRANSPARENT;
@@ -82,11 +119,15 @@ public:
             insertPressed = false;
         }
 
-        MSG msg;
-        while (PeekMessage(&msg, NULL, 0U, 0U, PM_REMOVE)) {
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
+        if (showMenu) {
+            ImGui::GetIO().MouseDrawCursor = true; 
+            ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
         }
+        else {
+            ImGui::GetIO().MouseDrawCursor = false;
+            ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouse;
+        }
+
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
@@ -97,11 +138,14 @@ public:
 
         ImGui::SetNextWindowSize(ImVec2(400, 300), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Leon CS2 - Settings", &showMenu)) {
-            if (ImGui::CollapsingHeader("Visuals", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::CollapsingHeader("Visuals")) {
                 ImGui::Checkbox("Skeleton ESP", &config::g_showSkeleton);
+                ImGui::SliderFloat("Thickness", &config::thickiness, 1.0f, 5.0f);
                 ImGui::Checkbox("Head Dot", &config::g_showHeadDot);
                 ImGui::Checkbox("Show Distance", &config::g_showDistance);
-                ImGui::SliderFloat("Thickness", &config::thickiness, 1.0f, 5.0f);
+                ImGui::Checkbox("SnapLines", &config::g_showSnaplines);
+                ImGui::Checkbox("HealthBar", &config::g_showHealthBar);
+
             }
 
             ImGui::Separator();
@@ -109,6 +153,7 @@ public:
                 static float skeletonCol[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
                 static float HeadCol[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
                 static float FovCol[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+                static float snapColor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
                 if (ImGui::ColorEdit4("Skeleton Color", skeletonCol)) {
                     config::color = IM_COL32(skeletonCol[0] * 255, skeletonCol[1] * 255, skeletonCol[2] * 255, skeletonCol[3] * 255);
                 }
@@ -118,18 +163,36 @@ public:
                 if (ImGui::ColorEdit4("FOV color", FovCol)) {
                     config::FOVCOLOR = IM_COL32(FovCol[0] * 255, FovCol[1] * 255, FovCol[2] * 255, FovCol[3] * 255);
                 }
+                if (ImGui::ColorEdit4("SnapLine color", snapColor)) {
+                    config::SnapLineColor = IM_COL32(snapColor[0] * 255, snapColor[1] * 255, snapColor[2] * 255, snapColor[3] * 255);
+                }
             }
 
             ImGui::Separator();
             if (ImGui::CollapsingHeader("AimBot")) {
                 ImGui::Checkbox("Aimbot", &config::g_aimbotEnabled);
                 ImGui::Checkbox("Draw FOV", &config::g_showFOV);
-                ImGui::SliderFloat("Smoothness", & config::smoothing, 0.0f, 10.0f);
-                ImGui::SliderFloat("FOV", & config::g_fov, 10.0f, 500.0f);
+                ImGui::SliderFloat("Smoothness", &config::smoothing, 1.0f, 10.0f);
+                ImGui::SliderFloat("FOV", &config::g_fov, 10.0f, 500.0f);
+            }
 
+            ImGui::Separator();
+			if (ImGui::CollapsingHeader("TriggerBot")) {
+                ImGui::Checkbox("Triggerbot", &config::g_triggerbotEnabled);
+				ImGui::SliderFloat("Reacion time (ms)", &config::g_reaction, 0, 1000);
+				ImGui::SliderFloat("Repeat Delay (ms)", &config::g_shotInterval, 0, 1000);
 
             }
-            
+
+            ImGui::Separator();
+            if (ImGui::CollapsingHeader("Misc")) {
+                ImGui::Checkbox("Team Check", &config::g_enemiesOnly);
+                ImGui::Checkbox("Alive Check", &config::g_checkAlive);
+                ImGui::Checkbox("SnapLines at bottom", &config::g_snapLinesBottom);
+                ImGui::Checkbox("Dynamic Visuals", &config::g_dynamicThickness);
+                ImGui::Checkbox("Hardware Mouse", &config::g_hardware);
+			}
+
 
             ImGui::Separator();
             ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Press INSERT to hide/show menu");
