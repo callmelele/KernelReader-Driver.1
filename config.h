@@ -9,7 +9,7 @@ namespace config {
     inline bool g_showFOV = false;
     inline bool g_showSnaplines = true;
     inline bool g_showHealthBar = true;
-    
+
 
     inline bool g_aimbotEnabled = true;
     inline bool g_triggerbotAimbotOnly = true;
@@ -21,8 +21,8 @@ namespace config {
     inline float smoothing = 1.5f;
     inline float g_fov = 100.0f;
     inline int opacity = 255;
-	inline float g_reaction = 100;
-	inline float g_shotInterval = 200;
+    inline float g_reaction = 100;
+    inline float g_shotInterval = 200;
 
     inline ImU32 color = IM_COL32(255, 255, 255, 255);
     inline ImU32 Hcolor = IM_COL32(255, 255, 255, 255);
@@ -37,4 +37,5 @@ namespace config {
     inline bool g_showBoxes = true;
     inline bool g_dynamicThickness = true;
     inline bool g_hardware = true;
+    inline bool g_useUDP = true;
 }
