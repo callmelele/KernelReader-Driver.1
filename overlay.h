@@ -30,7 +30,7 @@ public:
             PostQuitMessage(0);
             return 0;
         case WM_SYSCOMMAND:
-            if ((wParam & 0xfff0) == SC_KEYMENU) return 0; 
+            if ((wParam & 0xfff0) == SC_KEYMENU) return 0;
             break;
         }
         return DefWindowProc(hWnd, msg, wParam, lParam);
@@ -120,7 +120,7 @@ public:
         }
 
         if (showMenu) {
-            ImGui::GetIO().MouseDrawCursor = true; 
+            ImGui::GetIO().MouseDrawCursor = true;
             ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
         }
         else {
@@ -177,10 +177,10 @@ public:
             }
 
             ImGui::Separator();
-			if (ImGui::CollapsingHeader("TriggerBot")) {
+            if (ImGui::CollapsingHeader("TriggerBot")) {
                 ImGui::Checkbox("Triggerbot", &config::g_triggerbotEnabled);
-				ImGui::SliderFloat("Reacion time (ms)", &config::g_reaction, 0, 1000);
-				ImGui::SliderFloat("Repeat Delay (ms)", &config::g_shotInterval, 0, 1000);
+                ImGui::SliderFloat("Reacion time (ms)", &config::g_reaction, 0, 1000);
+                ImGui::SliderFloat("Repeat Delay (ms)", &config::g_shotInterval, 0, 1000);
 
             }
 
@@ -191,7 +191,8 @@ public:
                 ImGui::Checkbox("SnapLines at bottom", &config::g_snapLinesBottom);
                 ImGui::Checkbox("Dynamic Visuals", &config::g_dynamicThickness);
                 ImGui::Checkbox("Hardware Mouse", &config::g_hardware);
-			}
+                ImGui::Checkbox("Hardware Movement through UDP", &config::g_useUDP);
+            }
 
 
             ImGui::Separator();
