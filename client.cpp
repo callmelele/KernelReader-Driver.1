@@ -1,9 +1,12 @@
-﻿#include <windows.h>
+#include <windows.h>
 #include <iostream>
 #include <TlHelp32.h>
 #include <d3d11.h>
 #include <dwmapi.h>
 #include <string> 
+#include <chrono>
+#include <algorithm>
+#include <cstdint>
 
 #include "imgui/imgui.h"
 #include "imgui/imgui_impl_win32.h"
@@ -15,6 +18,7 @@
 #include "offsets.h"
 #include "overlay.h"
 #include "config.h"
+#include "serial.h"
 
 struct Vector2 { float x, y; };
 struct Vector3 {
@@ -67,8 +71,6 @@ bool GetBoneScreenPos(HANDLE hDriver, DWORD pid, uintptr_t boneArray, int index,
     return false;
 }
 
-
-
 DWORD GetPidByName(const wchar_t* processName) {
     DWORD pid = 0;
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -95,40 +97,29 @@ uintptr_t GetModuleBase(DWORD pid, const wchar_t* modName) {
     return base;
 }
 
-void AimAt(float x, float y, int sw, int sh) {
-    float CenterX = sw / 2.0f;
-    float CenterY = sh / 2.0f;
 
-    float TargetX = config::smoothing;
-    float TargetY = config::smoothing;
+void PerformMove(float x, float y, int sw, int sh) {
+    float moveX = (x - (float)sw / 2.0f) / config::smoothing;
+    float moveY = (y - (float)sh / 2.0f) / config::smoothing;
 
-    if (x != 0) {
-        if (x > CenterX) {
-            TargetX = -(CenterX - x);
-            TargetX /= 0.5f;
-            if (TargetX + CenterX > CenterX * 2) TargetX = 0;
-        }
-        else {
-            TargetX = x - CenterX;
-            TargetX /= 1.5f;
-            if (TargetX + CenterX < 0) TargetX = 0;
-        }
+    if (config::g_hardware && esp32.IsConnected()) {
+        int8_t finalX = (int8_t)std::clamp((int)moveX, -127, 127);
+        int8_t finalY = (int8_t)std::clamp((int)moveY, -127, 127);
+        esp32.SendData(finalX, finalY, 0);
     }
-
-    if (y != 0) {
-        if (y > CenterY) {
-            TargetY = -(CenterY - y);
-            TargetY /= 1.5f;
-            if (TargetY + CenterY > CenterY * 2) TargetY = 0;
-        }
-        else {
-            TargetY = y - CenterY;
-            TargetY /= 1.5f;
-            if (TargetY + CenterY < 0) TargetY = 0;
-        }
+    else {
+        mouse_event(MOUSEEVENTF_MOVE, (DWORD)moveX, (DWORD)moveY, NULL, NULL);
     }
+}
 
-    mouse_event(MOUSEEVENTF_MOVE, (DWORD)TargetX, (DWORD)TargetY, NULL, NULL);
+void PerformClick() {
+    if (config::g_hardware && esp32.IsConnected()) {
+        esp32.SendData(0, 0, 1); 
+    }
+    else {
+        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+    }
 }
 
 int main() {
@@ -141,9 +132,12 @@ int main() {
     int sw = GetSystemMetrics(SM_CXSCREEN);
     int sh = GetSystemMetrics(SM_CYSCREEN);
 
+    auto lastShotTime = std::chrono::steady_clock::now();
+    auto targetFirstSeen = std::chrono::steady_clock::now();
+    bool isTargetLocked = false;
+
     while (true) {
         ov.StartFrame();
-
         SetWindowPos(ov.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
         MSG msg;
         while (PeekMessage(&msg, NULL, 0U, 0U, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessage(&msg); }
@@ -159,8 +153,46 @@ int main() {
         ReadMemory(hDriver, pid, clientDll + offsets::dwEntityList, entityList);
         ReadMemory(hDriver, pid, clientDll + offsets::dwLocalPlayerPawn, localPawn);
 
+        int localTeam = 0;
+        ReadMemory(hDriver, pid, localPawn + offsets::m_iTeamNum, localTeam);
+
+        int localIndex = 1; 
+        ReadMemory(hDriver, pid, localPawn + offsets::m_iIDEntIndex, localIndex);
+
         Vector3 localPos;
         ReadMemory(hDriver, pid, localPawn + offsets::m_vOldOrigin, localPos);
+
+        if (config::g_triggerbotEnabled) {
+            auto now = std::chrono::steady_clock::now();
+            int crosshairId = 0;
+            bool enemyInCrosshair = false;
+
+            if (ReadMemory(hDriver, pid, localPawn + offsets::m_iIDEntIndex, crosshairId) && crosshairId > 0) {
+                uintptr_t entEntry = 0, entPawn = 0;
+                ReadMemory(hDriver, pid, entityList + (8LL * (crosshairId >> 9) + 16), entEntry);
+                ReadMemory(hDriver, pid, entEntry + (112LL * (crosshairId & 0x1FF)), entPawn);
+
+                if (entPawn != 0 && entPawn != localPawn) {
+                    int enemyTeam = 0;
+                    ReadMemory(hDriver, pid, entPawn + offsets::m_iTeamNum, enemyTeam);
+
+                    if (!config::g_enemiesOnly || (enemyTeam != localTeam)) {
+                        enemyInCrosshair = true;
+                    }
+                }
+            }
+
+            if (enemyInCrosshair) {
+                if (!isTargetLocked) { targetFirstSeen = now; isTargetLocked = true; }
+                auto timeSinceSeen = std::chrono::duration_cast<std::chrono::milliseconds>(now - targetFirstSeen).count();
+                auto timeSinceLastShot = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastShotTime).count();
+                if (timeSinceSeen >= config::g_reaction && timeSinceLastShot >= config::g_shotInterval) {
+                    PerformClick();
+                    lastShotTime = now;
+                }
+            }
+            else { isTargetLocked = false; }
+        }
 
         float closestDist = FLT_MAX;
         Vector2 bestTarget = { 0, 0 };
@@ -169,6 +201,7 @@ int main() {
             uintptr_t listEntry = 0, controller = 0, listEntry2 = 0, pawn = 0;
             ReadMemory(hDriver, pid, entityList + (8LL * (i >> 9) + 16), listEntry);
             ReadMemory(hDriver, pid, listEntry + (112LL * (i & 0x1FF)), controller);
+
             uint32_t pawnHandle = 0;
             ReadMemory(hDriver, pid, controller + 0x6C4, pawnHandle);
             if (pawnHandle == 0 || pawnHandle == 0xFFFFFFFF) continue;
@@ -177,9 +210,29 @@ int main() {
             ReadMemory(hDriver, pid, listEntry2 + (112LL * (pawnHandle & 0x1FF)), pawn);
             if (!pawn || pawn == localPawn) continue;
 
+            int enemyTeam = 0;
+            ReadMemory(hDriver, pid, pawn + offsets::m_iTeamNum, enemyTeam);
+
+            bool isEnemy = (enemyTeam != localTeam);
+            bool shouldProcess = (!config::g_enemiesOnly || isEnemy);
+
+            int health = 0;
+            ReadMemory(hDriver, pid, pawn + offsets::m_iHealth, health);
+
+            if (config::g_checkAlive) {
+                if (health <= 0 || health > 100) continue;
+            }
+
+            if (!shouldProcess) continue;
+
+
+            Vector3 enemyPos;
+            ReadMemory(hDriver, pid, pawn + offsets::m_vOldOrigin, enemyPos);
+            Vector2 screenPos;
+
+
             uintptr_t sceneNode = 0;
             ReadMemory(hDriver, pid, pawn + offsets::m_pGameSceneNode, sceneNode);
-
             uintptr_t boneArray = 0;
             ReadMemory(hDriver, pid, sceneNode + 0x160 + 0x80, boneArray);
 
@@ -190,19 +243,50 @@ int main() {
                 if (WorldToScreen(enemyPos, screenOrigin, vMatrix, sw, sh)) {
                     float distance = localPos.DistTo(enemyPos) / 39.37f;
                     std::string distStr = std::to_string((int)distance) + "m";
-                    float textWidth = ImGui::CalcTextSize(distStr.c_str()).x;
-                    drawList->AddText(ImVec2(screenOrigin.x - (textWidth / 2.0f), screenOrigin.y), IM_COL32(255, 255, 255, 255), distStr.c_str());
+                    drawList->AddText(ImVec2(screenOrigin.x, screenOrigin.y), IM_COL32(255, 255, 255, 255), distStr.c_str());
                 }
             }
 
-            /* bone structure
-                Torso, Head(6) → Neck(5) → Spine(4) → Pelvis(0)
-                Right Arm, Neck(5) → R_Shoulder(13) → R_Elbow(14) → R_Hand(16)
-                Left Arm, Neck(5) → L_Shoulder(8) → L_Elbow(9) → L_Hand(11)
-                Right Leg, Pelvis(0) → R_Hip(25) → R_Knee(26) → R_Foot(28)
-                Left Leg, Pelvis(0) → L_Hip(22) → L_Knee(23) → L_Foot(25)*/
+            float currentThick = config::thickiness;
+            float currentSize = 6.0f; 
+            float barHeight = 60.0f;
+            float barX1 = 22;
+            float barX2 = 18;
 
-            if (boneArray && config::g_showSkeleton || config::g_showHeadDot) {
+
+            if (config::g_dynamicThickness) {
+                float distance = localPos.DistTo(enemyPos) / 39.37f;
+                float scalingFactor = (15.0f / (distance + 1.0f));
+
+                currentThick = scalingFactor * config::thickiness;
+                if (currentThick < 1.0f) currentThick = 1.0f;
+                if (currentThick > config::thickiness * 2.0f) currentThick = config::thickiness * 2.0f;
+
+                barHeight = scalingFactor * 90.0f;
+                currentSize = scalingFactor * 7.0f;
+                barX1 = scalingFactor * 25.0f;
+                barX2 = scalingFactor * 21.0f;
+
+            }
+
+            if (WorldToScreen(enemyPos, screenPos, vMatrix, sw, sh)) {
+                if (config::g_showSnaplines) {
+                    ImVec2 startPoint = config::g_snapLinesBottom ? ImVec2(sw / 2.0f, sh) : ImVec2(sw / 2.0f, sh / 2.0f);
+                    drawList->AddLine(startPoint, ImVec2(screenPos.x, screenPos.y), config::SnapLineColor, 1.0f);
+                }
+
+
+                if (config::g_showHealthBar) {
+                    float currentHealthHeight = (health / 100.0f) * barHeight;
+                    ImColor healthColor = ImColor::HSV(health * 0.01f * 0.35f, 1.0f, 1.0f);
+
+                    drawList->AddRectFilled(ImVec2(screenPos.x - barX1, screenPos.y - barHeight), ImVec2(screenPos.x - barX2, screenPos.y), IM_COL32(0, 0, 0, 200));
+                    drawList->AddRectFilled(ImVec2(screenPos.x - barX1, screenPos.y - currentHealthHeight), ImVec2(screenPos.x - barX2, screenPos.y), healthColor);
+                }
+
+            }
+
+            if (boneArray) {
                 Vector2 head, neck, spine, pelvis, lShoulder, lElbow, lHand, rShoulder, rElbow, rHand, lHip, lKnee, lFoot, rHip, rKnee, rFoot;
 
                 if (config::g_showSkeleton &&
@@ -220,42 +304,29 @@ int main() {
                     GetBoneScreenPos(hDriver, pid, boneArray, 24, vMatrix, sw, sh, lFoot) &&
                     GetBoneScreenPos(hDriver, pid, boneArray, 25, vMatrix, sw, sh, rHip) &&
                     GetBoneScreenPos(hDriver, pid, boneArray, 26, vMatrix, sw, sh, rKnee) &&
-                    GetBoneScreenPos(hDriver, pid, boneArray, 27, vMatrix, sw, sh, rFoot)) {
-
-
-                    drawList->AddLine(ImVec2(neck.x, neck.y), ImVec2(spine.x, spine.y), config::color, config::thickiness);
-                    drawList->AddLine(ImVec2(spine.x, spine.y), ImVec2(pelvis.x, pelvis.y), config::color, config::thickiness);
-
-                    //upper body
-                    drawList->AddLine(ImVec2(neck.x, neck.y), ImVec2(lShoulder.x, lShoulder.y), config::color, config::thickiness);
-                    drawList->AddLine(ImVec2(lShoulder.x, lShoulder.y), ImVec2(lElbow.x, lElbow.y), config::color, config::thickiness);
-                    drawList->AddLine(ImVec2(lElbow.x, lElbow.y), ImVec2(lHand.x, lHand.y), config::color, config::thickiness);
-                    drawList->AddLine(ImVec2(neck.x, neck.y), ImVec2(rShoulder.x, rShoulder.y), config::color, config::thickiness);
-                    drawList->AddLine(ImVec2(rShoulder.x, rShoulder.y), ImVec2(rElbow.x, rElbow.y), config::color, config::thickiness);
-                    drawList->AddLine(ImVec2(rElbow.x, rElbow.y), ImVec2(rHand.x, rHand.y), config::color, config::thickiness);
-
-                    //lower body
-                    drawList->AddLine(ImVec2(pelvis.x, pelvis.y), ImVec2(lHip.x, lHip.y), config::color, config::thickiness);
-                    drawList->AddLine(ImVec2(lHip.x, lHip.y), ImVec2(lKnee.x, lKnee.y), config::color, config::thickiness);
-                    drawList->AddLine(ImVec2(lKnee.x, lKnee.y), ImVec2(lFoot.x, lFoot.y), config::color, config::thickiness);
-                    drawList->AddLine(ImVec2(pelvis.x, pelvis.y), ImVec2(rHip.x, rHip.y), config::color, config::thickiness);
-                    drawList->AddLine(ImVec2(rHip.x, rHip.y), ImVec2(rKnee.x, rKnee.y), config::color, config::thickiness);
-                    drawList->AddLine(ImVec2(rKnee.x, rKnee.y), ImVec2(rFoot.x, rFoot.y), config::color, config::thickiness);
-                }
-
-                if (config::g_showFOV) {
-                    drawList->AddCircle(
-                        ImVec2(sw / 2.0f, sh / 2.0f),
-                        config::g_fov,
-                        config::FOVCOLOR,
-                        100,                          
-                        1.0f                          
-                    );
+                    GetBoneScreenPos(hDriver, pid, boneArray, 27, vMatrix, sw, sh, rFoot))
+                {
+                    drawList->AddLine(ImVec2(neck.x, neck.y), ImVec2(spine.x, spine.y), config::color, currentThick);
+                    drawList->AddLine(ImVec2(spine.x, spine.y), ImVec2(pelvis.x, pelvis.y), config::color, currentThick);
+                    drawList->AddLine(ImVec2(neck.x, neck.y), ImVec2(lShoulder.x, lShoulder.y), config::color, currentThick);
+                    drawList->AddLine(ImVec2(lShoulder.x, lShoulder.y), ImVec2(lElbow.x, lElbow.y), config::color, currentThick);
+                    drawList->AddLine(ImVec2(lElbow.x, lElbow.y), ImVec2(lHand.x, lHand.y), config::color, currentThick);
+                    drawList->AddLine(ImVec2(neck.x, neck.y), ImVec2(rShoulder.x, rShoulder.y), config::color, currentThick);
+                    drawList->AddLine(ImVec2(rShoulder.x, rShoulder.y), ImVec2(rElbow.x, rElbow.y), config::color, currentThick);
+                    drawList->AddLine(ImVec2(rElbow.x, rElbow.y), ImVec2(rHand.x, rHand.y), config::color, currentThick);
+                    drawList->AddLine(ImVec2(pelvis.x, pelvis.y), ImVec2(lHip.x, lHip.y), config::color, currentThick);
+                    drawList->AddLine(ImVec2(lHip.x, lHip.y), ImVec2(lKnee.x, lKnee.y), config::color, currentThick);
+                    drawList->AddLine(ImVec2(lKnee.x, lKnee.y), ImVec2(lFoot.x, lFoot.y), config::color, currentThick);
+                    drawList->AddLine(ImVec2(pelvis.x, pelvis.y), ImVec2(rHip.x, rHip.y), config::color, currentThick);
+                    drawList->AddLine(ImVec2(rHip.x, rHip.y), ImVec2(rKnee.x, rKnee.y), config::color, currentThick);
+                    drawList->AddLine(ImVec2(rKnee.x, rKnee.y), ImVec2(rFoot.x, rFoot.y), config::color, currentThick);
                 }
 
                 if (GetBoneScreenPos(hDriver, pid, boneArray, 6, vMatrix, sw, sh, head)) {
-                    if (config::g_showHeadDot)
-                        drawList->AddCircle(ImVec2(head.x, head.y), 6.0f, config::Hcolor, 0, 3.0f);
+                    if (config::g_showHeadDot) {
+                        drawList->AddCircle(ImVec2(head.x, head.y), currentSize, config::Hcolor, 0, currentThick);
+                    }
+
                     if (config::g_aimbotEnabled) {
                         float crossDist = sqrtf(powf(head.x - sw / 2, 2) + powf(head.y - sh / 2, 2));
                         if (crossDist < closestDist) {
@@ -263,20 +334,21 @@ int main() {
                             bestTarget = head;
                         }
                     }
-
                 }
             }
         }
 
-        if (GetAsyncKeyState(VK_RBUTTON) && closestDist < config::g_fov) {
-            AimAt(bestTarget.x, bestTarget.y, sw, sh);
+        if (config::g_aimbotEnabled && closestDist <= config::g_fov && GetAsyncKeyState(VK_RBUTTON)) {
+            PerformMove(bestTarget.x, bestTarget.y, sw, sh);
+        }
+
+        if (config::g_showFOV) {
+            drawList->AddCircle(ImVec2(sw / 2.0f, sh / 2.0f), config::g_fov, config::FOVCOLOR, 100, 1.0f);
         }
 
         ImGui::End();
-
-        ov.DrawMenu(); 
+        ov.DrawMenu();
         ov.EndFrame();
-
 
         if (GetAsyncKeyState(VK_END)) break;
         Sleep(1);
