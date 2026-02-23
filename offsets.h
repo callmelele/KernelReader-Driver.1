@@ -13,6 +13,7 @@ namespace offsets {
     constexpr uintptr_t m_iHealth = 0x354;
     constexpr uintptr_t m_pClippingWeapon = 0x3DC0;
     constexpr uintptr_t m_iClip1 = 0x18D0;
+    constexpr uintptr_t m_iIDEntIndex = 0x3EAC;
 
     constexpr uintptr_t m_vecOrigin = 0x608;
     constexpr uintptr_t m_iTeamNum = 0x3F3;
@@ -23,5 +24,6 @@ namespace offsets {
     constexpr uintptr_t m_vecViewOffset = 0xD58;
     constexpr uintptr_t m_sSanitizedPlayerName = 0x860;
     constexpr uintptr_t m_vOldOrigin = 0x1588;
-
+    constexpr uintptr_t m_entitySpottedState = 0x26E0;
+    constexpr uintptr_t m_bSpottedByMask = 0xC;
 }
