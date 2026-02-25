@@ -145,6 +145,7 @@ public:
                 ImGui::Checkbox("Show Distance", &config::g_showDistance);
                 ImGui::Checkbox("SnapLines", &config::g_showSnaplines);
                 ImGui::Checkbox("HealthBar", &config::g_showHealthBar);
+                ImGui::Checkbox("Show Names", &config::g_showNames);
 
             }
 
@@ -154,6 +155,7 @@ public:
                 static float HeadCol[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
                 static float FovCol[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
                 static float snapColor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+                static float nameColor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
                 if (ImGui::ColorEdit4("Skeleton Color", skeletonCol)) {
                     config::color = IM_COL32(skeletonCol[0] * 255, skeletonCol[1] * 255, skeletonCol[2] * 255, skeletonCol[3] * 255);
                 }
@@ -166,14 +168,20 @@ public:
                 if (ImGui::ColorEdit4("SnapLine color", snapColor)) {
                     config::SnapLineColor = IM_COL32(snapColor[0] * 255, snapColor[1] * 255, snapColor[2] * 255, snapColor[3] * 255);
                 }
+                if (ImGui::ColorEdit4("Name color", nameColor)) {
+                    config::nameColor = IM_COL32(nameColor[0] * 255, nameColor[1] * 255, nameColor[2] * 255, nameColor[3] * 255);
+                }
             }
 
             ImGui::Separator();
             if (ImGui::CollapsingHeader("AimBot")) {
                 ImGui::Checkbox("Aimbot", &config::g_aimbotEnabled);
+                ImGui::Checkbox("Quadratic Bezier Curve", &config::g_bezier);
                 ImGui::Checkbox("Draw FOV", &config::g_showFOV);
-                ImGui::SliderFloat("Smoothness", &config::smoothing, 1.0f, 10.0f);
+                ImGui::SliderFloat("Speed", &config::g_speed, 0.1f, 10.0f);
                 ImGui::SliderFloat("FOV", &config::g_fov, 10.0f, 500.0f);
+                static const char* items[]{ "Head","Spine","Pelvis", "Closest Bone"};  
+                bool check = ImGui::Combo("Target", &config::Selecteditem, items, IM_ARRAYSIZE(items));
             }
 
             ImGui::Separator();
