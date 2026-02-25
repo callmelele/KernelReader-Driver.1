@@ -1,31 +1,58 @@
+#include <WiFi.h>
+#include <WiFiUdp.h>
 #include "USB.h"
 #include "USBHIDMouse.h"
+#include "esp_wifi.h" // Needed for power-saving control
 
+const char* ssid = "#Telia-88C6D8";
+const char* password = "#M49Z)6c-sH%hsJ9";
+WiFiUDP udp;
 USBHIDMouse Mouse;
 
 void setup() {
-    // This is the bridge to the CH343 (COM3)
-    Serial.begin(115200); 
+    Serial.begin(115200);
+    
+    WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) { delay(100); }
 
-    // Initialize the HID Mouse (COM5)
+    // CRITICAL: Disable WiFi Power Saving to reduce latency/jitter
+    esp_wifi_set_ps(WIFI_PS_NONE);
+
+    udp.begin(4444);
     Mouse.begin();
     USB.begin();
+    
+    Serial.println(WiFi.localIP());
+}
+
+void handleInput(int8_t x, int8_t y, uint8_t click) {
+    if (x != 0 || y != 0) {
+        Mouse.move(x, y);
+    }
+
+    if (click == 1) {
+        Mouse.press(MOUSE_LEFT);
+
+        delayMicroseconds(500); 
+        Mouse.release(MOUSE_LEFT);
+    }
 }
 
 void loop() {
-    // We listen to the hardware Serial (COM3)
+    // 1. UDP Handling
+    int packetSize = udp.parsePacket();
+    if (packetSize >= 3) {
+        uint8_t buf[3];
+        udp.read(buf, 3);
+        handleInput((int8_t)buf[0], (int8_t)buf[1], buf[2]);
+        while(udp.parsePacket() > 0) udp.flush(); // Clear backlog
+    }
+
+    // 2. Serial Handling (The Fix)
     if (Serial.available() >= 3) {
-        int8_t x = (int8_t)Serial.read();
-        int8_t y = (int8_t)Serial.read();
-        uint8_t click = (uint8_t)Serial.read();
-
-        // Send move to the PC via the USB HID logic
-        Mouse.move(x, y);
-
-        if (click == 1) {
-            Mouse.press(MOUSE_LEFT);
-            delay(1); // Tiny delay to ensure the OS registers the click
-            Mouse.release(MOUSE_LEFT);
-        }
+        int8_t x = Serial.read();
+        int8_t y = Serial.read();
+        uint8_t click = Serial.read();
+        handleInput(x, y, click);
     }
 }
