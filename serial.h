@@ -1,45 +1,82 @@
 #pragma once
+
+#define WIN32_LEAN_AND_MEAN
+
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <iostream>
 #include <cstdint>
 
-class Serial {
+#pragma comment(lib, "ws2_32.lib")
+
+class Communication {
 private:
-    HANDLE hSerial;
-    bool connected;
+    HANDLE hSerial = INVALID_HANDLE_VALUE;
+    SOCKET udpSocket = INVALID_SOCKET;
+    sockaddr_in destAddr;
+    bool serialConnected = false;
+    bool udpConnected = false;
+
 public:
-    Serial(const char* portName) {
-        connected = false;
+    Communication(const char* portName, const char* ipAddress, int port) {
+        //Setup Serial (COM3)
         hSerial = CreateFileA(portName, GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hSerial != INVALID_HANDLE_VALUE) {
-            DCB dcbSerialParams = { 0 };
-            dcbSerialParams.DCBlength = sizeof(dcbSerialParams);
-            if (GetCommState(hSerial, &dcbSerialParams)) {
-                dcbSerialParams.BaudRate = CBR_115200;
-                dcbSerialParams.ByteSize = 8;
-                dcbSerialParams.StopBits = ONESTOPBIT;
-                dcbSerialParams.Parity = NOPARITY;
-
-                dcbSerialParams.fDtrControl = DTR_CONTROL_ENABLE;
-                dcbSerialParams.fRtsControl = RTS_CONTROL_ENABLE;
-
-                if (SetCommState(hSerial, &dcbSerialParams)) {
-                    connected = true;
+            DCB dcb = { 0 };
+            dcb.DCBlength = sizeof(dcb);
+            if (GetCommState(hSerial, &dcb)) {
+                dcb.BaudRate = CBR_115200;
+                dcb.fDtrControl = DTR_CONTROL_ENABLE;
+                dcb.fRtsControl = RTS_CONTROL_ENABLE;
+                if (SetCommState(hSerial, &dcb)) {
+                    serialConnected = true;
                     PurgeComm(hSerial, PURGE_RXCLEAR | PURGE_TXCLEAR);
-                    std::cout << "[+] Stable Bridge Connected on " << portName << std::endl;
+                    std::cout << "[+] Serial Bridge Ready on " << portName << std::endl;
                 }
             }
         }
-    }
-    ~Serial() { if (connected) CloseHandle(hSerial); }
-    bool IsConnected() { return connected; }
 
-    bool SendData(int8_t x, int8_t y, uint8_t click) {
-        if (!connected) return false;
-        uint8_t packet[3] = { (uint8_t)x, (uint8_t)y, click };
-        DWORD bytesWritten;
-        return WriteFile(hSerial, packet, 3, &bytesWritten, NULL);
+        //Setup UDP (Wi-Fi)
+        WSADATA wsaData;
+        if (WSAStartup(MAKEWORD(2, 2), &wsaData) == 0) {
+            udpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+            if (udpSocket != INVALID_SOCKET) {
+                destAddr.sin_family = AF_INET;
+                destAddr.sin_port = htons(port);
+                inet_pton(AF_INET, ipAddress, &destAddr.sin_addr);
+                udpConnected = true;
+                std::cout << "[+] UDP Socket Ready for " << ipAddress << ":" << port << std::endl;
+            }
+        }
     }
+
+    ~Communication() {
+        if (serialConnected) CloseHandle(hSerial);
+        if (udpConnected) {
+            closesocket(udpSocket);
+            WSACleanup();
+        }
+    }
+
+    bool SendData(int8_t x, int8_t y, uint8_t click, bool useUDP) {
+        uint8_t packet[3] = { (uint8_t)x, (uint8_t)y, click };
+
+        if (useUDP && udpConnected) {
+            sendto(udpSocket, (char*)packet, 3, 0, (sockaddr*)&destAddr, sizeof(destAddr));
+            
+            return true;
+        }
+
+        if (!useUDP && serialConnected) {
+            DWORD written;
+            return WriteFile(hSerial, packet, 3, &written, NULL);
+        }
+
+        return false;
+    }
+
+    bool IsAnyConnected() { return serialConnected || udpConnected; }
 };
 
-inline Serial esp32("\\\\.\\COM3");
+inline Communication esp32("\\\\.\\COM3", "192.168.1.81", 4444);
