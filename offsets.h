@@ -2,10 +2,10 @@
 #include <cstdint>
 
 namespace offsets {
-    constexpr uintptr_t dwLocalPlayerController = 0x22EF0B8;
-    constexpr uintptr_t dwEntityList = 0x24AA0D8;
-    constexpr uintptr_t dwLocalPlayerPawn = 0x2064AE0;
-    constexpr uintptr_t dwViewMatrix = 0x230ADE0;
+    constexpr uintptr_t dwLocalPlayerController = 0x22F0188;
+    constexpr uintptr_t dwEntityList = 0x24AB1C8;
+    constexpr uintptr_t dwLocalPlayerPawn = 0x2065AF0;
+    constexpr uintptr_t dwViewMatrix = 0x230BEE0;
     constexpr uintptr_t m_hPlayerPawn = 0x90C;
     constexpr uintptr_t m_iszPlayerName = 0x6F8;
 
