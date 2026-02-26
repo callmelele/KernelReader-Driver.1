@@ -104,13 +104,31 @@ uintptr_t GetModuleBase(DWORD pid, const wchar_t* modName) {
 }
 
 
-void PerformMove(float x, float y, int sw, int sh) {
-    float moveX = (x - (float)sw / 2.0f) * config::g_speed;
-    float moveY = (y - (float)sh / 2.0f) * config::g_speed;
+void PerformMove(float targetX, float targetY, int sw, int sh) {
+    float targetRelX = (targetX - (float)sw / 2.0f);
+    float targetRelY = (targetY - (float)sh / 2.0f);
+
+    float moveX = targetRelX * config::g_speed;
+    float moveY = targetRelY * config::g_speed;
 
     static auto lastSend = std::chrono::steady_clock::now();
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - lastSend).count();
+
+    if (config::g_bezier) {
+        float t = 0.55f;
+        float u = 1.0f - t;
+        float tt = t * t;
+
+        float arcStrength = 0.35f;
+
+        float controlX = (targetRelX * 0.5f) + (targetRelY * arcStrength);
+        float controlY = (targetRelY * 0.5f) - (targetRelX * arcStrength);
+
+        //Quadratic Bezier Formula: B(t) = (1-t)^2*P0 + 2(1-t)t*P1 + t^2*P2
+        moveX = ((2 * u * t * controlX) + (tt * targetRelX)) * config::g_speed;
+        moveY = ((2 * u * t * controlY) + (tt * targetRelY)) * config::g_speed;
+    }
 
     if (config::g_hardware && esp32.IsAnyConnected()) {
         if (elapsed < 1000 && abs(moveX) < 1.0f && abs(moveY) < 1.0f) return;
@@ -227,7 +245,7 @@ int main() {
             ReadMemory(hDriver, pid, entityList + (8LL * (i >> 9) + 16), listEntry);
             ReadMemory(hDriver, pid, listEntry + (112LL * (i & 0x1FF)), controller);
 
-            
+
 
             uint32_t pawnHandle = 0;
             ReadMemory(hDriver, pid, controller + 0x6C4, pawnHandle);
