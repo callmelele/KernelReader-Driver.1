@@ -21,6 +21,8 @@
 #include "overlay.h"
 #include "config.h"
 
+#define M_PI 3.14159265358979323846f
+
 struct Vector2 { float x, y; };
 struct Vector3 {
     float x, y, z;
@@ -144,6 +146,8 @@ void PerformMove(float targetX, float targetY, int sw, int sh) {
     }
 }
 
+
+
 void PerformClick() {
     if (config::g_hardware && esp32.IsAnyConnected()) {
         esp32.SendData(0, 0, 1, config::g_useUDP);
@@ -167,6 +171,7 @@ int main() {
     auto lastShotTime = std::chrono::steady_clock::now();
     auto targetFirstSeen = std::chrono::steady_clock::now();
     bool isTargetLocked = false;
+
 
     while (true) {
         ov.StartFrame();
@@ -193,6 +198,7 @@ int main() {
 
         Vector3 localPos;
         ReadMemory(hDriver, pid, localPawn + offsets::m_vOldOrigin, localPos);
+
 
 
         if (!config::g_hardware) {
@@ -237,7 +243,7 @@ int main() {
         const int BONE_HEAD = 6;
         const int BONE_SPINE = 4;
         const int BONE_PELVIS = 0;
-        std::vector<int> allBones = { 6, 4, 0, 8, 13, 22, 25 };
+        std::vector<int> allBones = { 6, 4, 0, 8, 13, 22, 25, 24, 27, 23, 26 };
 
 
         for (int i = 1; i < 64; i++) {
@@ -283,6 +289,7 @@ int main() {
             uintptr_t boneArray = 0;
             ReadMemory(hDriver, pid, sceneNode + 0x160 + 0x80, boneArray);
 
+			
             if (config::g_showDistance) {
                 Vector3 enemyPos;
                 ReadMemory(hDriver, pid, pawn + offsets::m_vOldOrigin, enemyPos);
@@ -318,7 +325,33 @@ int main() {
 
                 textScale = std::clamp(scalingFactor * 1.5f, 0.6f, 1.2f);
                 nameY = scalingFactor * 30.0f;
+            }
 
+            BoneData headBone;
+            if (ReadMemory(hDriver, pid, boneArray + (6 * 32), headBone) && config::eyeLine) {
+                Vector3 eyeAngles;
+                if (ReadMemory(hDriver, pid, pawn + offsets::m_angEyeAngles, eyeAngles)) {
+                    float pitch = eyeAngles.x * (M_PI / 180.0f);
+                    float yaw = eyeAngles.y * (M_PI / 180.0f);
+
+                    Vector3 forward;
+                    forward.x = cosf(yaw) * cosf(pitch);
+                    forward.y = sinf(yaw) * cosf(pitch);
+                    forward.z = -sinf(pitch);
+
+                    float lineLength = config::eyeLineLengh;
+                    Vector3 lookEndPos = {
+                        headBone.pos.x + (forward.x * lineLength),
+                        headBone.pos.y + (forward.y * lineLength),
+                        headBone.pos.z + (forward.z * lineLength)
+                    };
+
+                    Vector2 screenHead, screenLook;
+                    if (WorldToScreen(headBone.pos, screenHead, vMatrix, sw, sh) &&
+                        WorldToScreen(lookEndPos, screenLook, vMatrix, sw, sh)) {
+                        drawList->AddLine(ImVec2(screenHead.x, screenHead.y), ImVec2(screenLook.x, screenLook.y), config::directionColor, currentThick);
+                    }
+                }
             }
 
             if (WorldToScreen(enemyPos, screenPos, vMatrix, sw, sh)) {
@@ -411,8 +444,10 @@ int main() {
             }
         }
 
-        if (config::g_aimbotEnabled && closestDist <= config::g_fov && GetAsyncKeyState(VK_RBUTTON)) {
-            PerformMove(bestTarget.x, bestTarget.y, sw, sh);
+        if (config::g_aimbotEnabled && closestDist <= config::g_fov) {
+            if (GetAsyncKeyState(VK_RBUTTON) || GetAsyncKeyState(VK_LMENU)) {
+                PerformMove(bestTarget.x, bestTarget.y, sw, sh);
+            }
         }
 
         if (config::g_showFOV) drawList->AddCircle(ImVec2(sw / 2.0f, sh / 2.0f), config::g_fov, config::FOVCOLOR, 100, 1.0f);
